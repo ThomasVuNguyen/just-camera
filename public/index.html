@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera & Name</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- TensorFlow.js Core and Backend -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.10.0/dist/tf-core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.10.0/dist/tf-backend-webgl.min.js"></script>
+
+    <!-- Body Segmentation and MediaPipe Runtime -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-segmentation@1.0.1/dist/body-segmentation.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/selfie_segmentation.js"></script>
+
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700&display=swap" rel="stylesheet">
+
+    <!-- Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        [contenteditable]:focus { outline: none; opacity: 0.8; }
+
+        .fade-in { animation: fadeIn 1s ease-out forwards; opacity: 0; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Loading pulse for the AI model */
+        .ai-loading { animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite; }
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255, 255, 255, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+        }
+    </style>
+</head>
+<body class="bg-black h-screen w-full overflow-hidden relative">
+
+    <!-- The Viewport -->
+    <div class="absolute inset-0 w-full h-full">
+        <!-- Hidden source video for processing -->
+        <video id="input-video" class="hidden" playsinline muted></video>
+
+        <!-- Output Canvas -->
+        <canvas id="output-canvas" class="w-full h-full object-cover transform scale-x-[-1]"></canvas>
+
+        <!-- Error State -->
+        <div id="error-message" class="hidden absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-black/80 z-20 backdrop-blur-md">
+            <p class="text-white/90 font-medium text-xl mb-6">Camera access needed</p>
+            <button onclick="initCamera()" class="px-8 py-3 bg-white text-black hover:bg-gray-200 rounded-full text-sm transition-all font-bold tracking-wide">
+                Enable Camera
+            </button>
+        </div>
+
+        <!-- Initial Loading State -->
+        <div id="loading-spinner" class="absolute inset-0 flex flex-col gap-4 items-center justify-center z-10 pointer-events-none transition-opacity duration-500">
+            <div class="w-16 h-16 border-4 border-white/10 border-t-white rounded-full animate-spin"></div>
+            <p class="text-white/50 text-sm font-medium tracking-wide">Initializing Camera & AI...</p>
+        </div>
+    </div>
+
+    <!-- UI Controls -->
+    <div class="absolute bottom-12 left-0 right-0 flex justify-center items-center gap-4 z-30 pointer-events-none fade-in px-4 flex-wrap">
+
+        <!-- Name Tag -->
+        <div class="pointer-events-auto group flex items-center gap-4 pl-5 pr-8 py-4 bg-black/40 backdrop-blur-xl border border-white/10 rounded-full shadow-2xl hover:bg-black/50 transition-all duration-300 transform hover:scale-[1.02]">
+            <div class="relative flex h-3 w-3">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]"></span>
+            </div>
+            <h1 id="name-overlay" contenteditable="true" class="text-2xl md:text-3xl font-bold tracking-wide text-white min-w-[100px] text-center cursor-text selection:bg-white/30" spellcheck="false">
+                Casey Anderson
+            </h1>
+        </div>
+
+        <!-- Resolution Toggle Button -->
+        <button onclick="toggleResolution()" id="res-btn" class="pointer-events-auto h-[68px] w-[68px] flex flex-col items-center justify-center bg-black/40 backdrop-blur-xl border border-white/10 rounded-full text-white hover:bg-white/20 transition-all duration-300 hover:scale-105 active:scale-95 group relative overflow-hidden">
+             <span id="res-text" class="text-xs font-bold tracking-wider mb-0.5">720p</span>
+             <i data-lucide="monitor" class="w-4 h-4 opacity-70"></i>
+        </button>
+
+        <!-- Camera Picker -->
+        <div class="pointer-events-auto flex items-center gap-2 pl-4 pr-5 py-4 bg-black/40 backdrop-blur-xl border border-white/10 rounded-full text-white hover:bg-black/50 transition-all duration-300">
+            <i data-lucide="camera" class="w-4 h-4 opacity-70"></i>
+            <select id="camera-select" class="bg-transparent text-sm font-semibold focus:outline-none cursor-pointer">
+                <option selected>Default camera</option>
+            </select>
+        </div>
+
+        <!-- Background Toggle Button -->
+        <button onclick="cycleBackground()" id="bg-btn" class="pointer-events-auto h-[68px] w-[68px] flex items-center justify-center bg-black/40 backdrop-blur-xl border border-white/10 rounded-full text-white hover:bg-white/20 transition-all duration-300 hover:scale-105 active:scale-95 group relative overflow-hidden">
+            <i data-lucide="image" class="w-6 h-6 relative z-10"></i>
+            <!-- Loading indicator for model switch -->
+            <div id="model-loader" class="hidden absolute inset-0 bg-white/10 ai-loading rounded-full"></div>
+        </button>
+
+    </div>
+
+    <script>
+        // --- Elements ---
+        const videoElement = document.getElementById('input-video');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const errorMessage = document.getElementById('error-message');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const modelLoader = document.getElementById('model-loader');
+        const bgBtn = document.getElementById('bg-btn');
+        const resBtn = document.getElementById('res-btn');
+        const resText = document.getElementById('res-text');
+        const cameraSelect = document.getElementById('camera-select');
+
+        // --- State ---
+        let segmenter = null; // Renamed from segmentationModel for clarity
+        let animationFrameId = null;
+        let isModelLoaded = false;
+        let isHighRes = false; // Default 720p
+        let selectedDeviceId = null;
+
+        // Background Modes: 0: Normal, 1: Blur, 2: Image A, 3: Image B, ...
+        let bgMode = 0;
+        const bgImages = [];
+        const bgImageUrls = [
+            'https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1920&q=80', // Office
+            'https://images.unsplash.com/photo-1550684848-fac1c5b4e853?auto=format&fit=crop&w=1920&q=80', // Neon
+            'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1920&q=80',  // Nature
+            'https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=1920&q=80', // Modern Loft
+            'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=1920&q=80', // Cozy Cafe
+            'https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&w=1920&q=80'  // Library
+        ];
+
+        // Preload images
+        bgImageUrls.forEach(url => {
+            const img = new Image();
+            img.crossOrigin = "Anonymous"; // Important for canvas
+            img.src = url;
+            bgImages.push(img);
+        });
+
+        // --- Model Setup ---
+        async function loadSegmentationModel() {
+            if (segmenter) return;
+
+            modelLoader.classList.remove('hidden');
+
+            const model = bodySegmentation.SupportedModels.MediaPipeSelfieSegmentation;
+            const segmenterConfig = {
+              runtime: 'mediapipe',
+              solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747',
+              modelType: 'general'
+            };
+
+            try {
+                segmenter = await bodySegmentation.createSegmenter(model, segmenterConfig);
+                isModelLoaded = true;
+            } catch (err) {
+                console.error("Failed to load body segmentation model", err);
+            }
+
+            modelLoader.classList.add('hidden');
+        }
+
+        async function renderLoop() {
+            // Resize canvas to match video stream if needed
+            if (videoElement.readyState >= 2) {
+                if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
+                    canvasElement.width = videoElement.videoWidth;
+                    canvasElement.height = videoElement.videoHeight;
+                }
+
+                // If not in a background mode, or model not loaded, just pass through video
+                if (!isModelLoaded || bgMode === 0) {
+                    canvasCtx.save();
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                    canvasCtx.restore();
+                }
+                else {
+                    try {
+                        const segmentation = await segmenter.segmentPeople(videoElement);
+
+                        // The mask is an ImageData like object if using 'general' model type with default config
+                        // We use the simpler toBinaryMask or handling provided by the library usually,
+                        // but let's do compositing manually for performance and control.
+
+                        // NOTE: body-segmentation API provides `toBinaryMask` which is useful.
+                        // However, we want to perform the compositing efficiently.
+                        // We'll use the 'mask' property which contains the segmentation data.
+
+                        // Let's use the built-in helper for compositing which is optimized
+                        if (bgMode === 1) {
+                            // Blur
+                            await bodySegmentation.drawBokehEffect(
+                                canvasElement,
+                                videoElement,
+                                segmentation,
+                                10, // Blur amount
+                                10, // Edge blur amount
+                                0.7
+                            );
+                        } else {
+                            // Image replacement
+                            // FIXED: Inverted the mask colors.
+                            // Foreground (Person) is now Opaque (255 alpha), Background is Transparent (0 alpha).
+                            const foregroundColor = {r: 0, g: 0, b: 0, a: 255};
+                            const backgroundColor = {r: 0, g: 0, b: 0, a: 0};
+
+                            const mask = await bodySegmentation.toBinaryMask(
+                                segmentation,
+                                foregroundColor,
+                                backgroundColor,
+                                false,
+                                0.65
+                            );
+
+                            canvasCtx.save();
+                            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+                            // 1. Draw the Mask (Opaque on person, transparent on background)
+                            canvasCtx.putImageData(mask, 0, 0);
+
+                            // 2. Composite Source Video (Person)
+                            // 'source-in' keeps the video ONLY where the mask is opaque (the person)
+                            canvasCtx.globalCompositeOperation = 'source-in';
+                            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+
+                            // 3. Composite Background
+                            // 'destination-over' draws the background BEHIND the existing content (the person)
+                            canvasCtx.globalCompositeOperation = 'destination-over';
+
+                            const bgImg = bgImages[bgMode - 2];
+                            if (bgImg && bgImg.complete) {
+                                // Aspect fill logic
+                                const scale = Math.max(canvasElement.width / bgImg.width, canvasElement.height / bgImg.height);
+                                const x = (canvasElement.width / 2) - (bgImg.width / 2) * scale;
+                                const y = (canvasElement.height / 2) - (bgImg.height / 2) * scale;
+                                canvasCtx.drawImage(bgImg, x, y, bgImg.width * scale, bgImg.height * scale);
+                            } else {
+                                // Fallback color
+                                canvasCtx.fillStyle = '#222';
+                                canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+                            }
+
+                            canvasCtx.restore();
+                        }
+
+                    } catch (err) {
+                        console.error("Segmentation failed", err);
+                        // Fallback to normal video
+                        canvasCtx.drawImage(videoElement, 0, 0);
+                    }
+                }
+            }
+
+            animationFrameId = requestAnimationFrame(renderLoop);
+        }
+
+        // --- Controls ---
+        async function cycleBackground() {
+            if (!isModelLoaded) {
+                bgBtn.classList.add('opacity-50', 'cursor-wait');
+                await loadSegmentationModel();
+                bgBtn.classList.remove('opacity-50', 'cursor-wait');
+            }
+
+            bgMode = (bgMode + 1) % (2 + bgImages.length);
+
+            if (bgMode === 0) {
+                 lucide.createIcons({ attrs: { class: "w-6 h-6 text-white" }, nameAttr: 'data-lucide' });
+                 bgBtn.style.borderColor = 'rgba(255,255,255,0.1)';
+            } else {
+                 bgBtn.style.borderColor = '#10b981'; // Green border when active
+            }
+        }
+
+        async function toggleResolution() {
+            isHighRes = !isHighRes;
+
+            // UI Update
+            if (isHighRes) {
+                resText.textContent = "1080p";
+                resBtn.style.borderColor = '#3b82f6';
+                resBtn.classList.add('bg-blue-500/20');
+            } else {
+                resText.textContent = "720p";
+                resBtn.style.borderColor = 'rgba(255,255,255,0.1)';
+                resBtn.classList.remove('bg-blue-500/20');
+            }
+
+            // Show loader while switching
+            loadingSpinner.classList.remove('hidden');
+            loadingSpinner.classList.remove('opacity-0');
+
+            // Restart Camera
+            initCamera();
+        }
+
+        // --- Camera Logic ---
+        async function initCamera() {
+            errorMessage.classList.add('hidden');
+
+            // Stop previous stream if any
+            if (videoElement.srcObject) {
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+            }
+
+            const targetWidth = isHighRes ? 1920 : 1280;
+            const targetHeight = isHighRes ? 1080 : 720;
+            const videoConstraints = {
+                width: { ideal: targetWidth },
+                height: { ideal: targetHeight },
+                facingMode: "user"
+            };
+
+            if (selectedDeviceId) {
+                videoConstraints.deviceId = { exact: selectedDeviceId };
+                delete videoConstraints.facingMode;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: videoConstraints,
+                    audio: false
+                });
+
+                videoElement.srcObject = stream;
+                await videoElement.play();
+
+                loadingSpinner.classList.add('opacity-0');
+                setTimeout(() => loadingSpinner.classList.add('hidden'), 500);
+                lucide.createIcons();
+
+                // Refresh camera list once permission is granted so labels are available
+                await listCameras();
+
+                // Start Loop if not started
+                if (!animationFrameId) {
+                    renderLoop();
+                }
+
+            } catch (err) {
+                console.error("Camera access failed:", err);
+                loadingSpinner.classList.add('hidden');
+                errorMessage.classList.remove('hidden');
+            }
+        }
+
+        // Populate camera dropdown
+        async function listCameras() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+                cameraSelect.innerHTML = '';
+
+                if (videoDevices.length === 0) {
+                    const opt = document.createElement('option');
+                    opt.textContent = 'No cameras found';
+                    opt.disabled = true;
+                    cameraSelect.appendChild(opt);
+                    cameraSelect.disabled = true;
+                    return;
+                }
+
+                cameraSelect.disabled = false;
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'Default camera';
+                defaultOption.selected = !selectedDeviceId;
+                cameraSelect.appendChild(defaultOption);
+
+                videoDevices.forEach((device, idx) => {
+                    const opt = document.createElement('option');
+                    opt.value = device.deviceId;
+                    opt.textContent = device.label || `Camera ${idx + 1}`;
+                    if (device.deviceId === selectedDeviceId) {
+                        opt.selected = true;
+                    }
+                    cameraSelect.appendChild(opt);
+                });
+            } catch (err) {
+                console.error('Unable to list cameras', err);
+            }
+        }
+
+        // Start
+        window.addEventListener('load', () => {
+            initCamera();
+            lucide.createIcons();
+            listCameras();
+            navigator.mediaDevices.addEventListener('devicechange', listCameras);
+
+            cameraSelect.addEventListener('change', () => {
+                selectedDeviceId = cameraSelect.value || null;
+                initCamera();
+            });
+
+            // Text Editing logic
+            const nameOverlay = document.getElementById('name-overlay');
+            nameOverlay.addEventListener('click', function() {
+                if (document.activeElement !== this) {
+                    const range = document.createRange();
+                    range.selectNodeContents(this);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+            });
+            nameOverlay.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    nameOverlay.blur();
+                }
+            });
+        });
+
+    </script>
+</body>
+</html>
